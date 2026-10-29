@@ -1,256 +1,141 @@
 import AppKit
 import SwiftUI
 
+/// All live surfaces share the photograph's coordinate system, including on
+/// ultrawide displays: crop the complete composition, never stretch individual props.
 struct WallpaperView: View {
     @ObservedObject var nowPlaying: NowPlayingService
 
     var body: some View {
         GeometryReader { proxy in
-            ZStack {
-                background
-
-                HStack(spacing: max(40, proxy.size.width * 0.055)) {
-                    VinylStage(track: nowPlaying.track)
-                        .frame(
-                            width: min(proxy.size.width * 0.48, 700),
-                            height: min(proxy.size.height * 0.76, 700)
-                        )
-
-                    TrackPanel(track: nowPlaying.track, connectionState: nowPlaying.connectionState)
-                        .frame(maxWidth: 520, alignment: .leading)
-                }
-                .padding(.horizontal, max(52, proxy.size.width * 0.07))
-                .padding(.vertical, 60)
-            }
+            let scale = max(proxy.size.width / 1586, proxy.size.height / 992)
+            ListeningRoom(artwork: nowPlaying.artwork,
+                          previousArtwork: nowPlaying.previousArtwork,
+                          isPlaying: nowPlaying.track.isPlaying)
+                .frame(width: 1586, height: 992)
+                .scaleEffect(scale)
+                .frame(width: proxy.size.width, height: proxy.size.height)
         }
+        .clipped()
         .ignoresSafeArea()
     }
+}
 
-    private var background: some View {
-        ZStack {
-            LinearGradient(
-                colors: [
-                    Color(red: 0.055, green: 0.05, blue: 0.07),
-                    Color(red: 0.015, green: 0.016, blue: 0.022)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+struct ListeningRoom: View {
+    let artwork: NSImage?
+    let previousArtwork: NSImage?
+    let isPlaying: Bool
+    private static let roomImage: NSImage = {
+        guard let url = Bundle.main.url(forResource: "listening-room", withExtension: "png")
+                ?? Bundle.module.url(forResource: "listening-room", withExtension: "png"),
+              let image = NSImage(contentsOf: url) else {
+            preconditionFailure("The bundled listening-room photograph is missing")
+        }
+        return image
+    }()
 
-            RadialGradient(
-                colors: [Color.white.opacity(0.08), .clear],
-                center: .topLeading,
-                startRadius: 0,
-                endRadius: 900
-            )
+    @State private var accumulatedRotation: TimeInterval = 0
+    @State private var rotationStartedAt = Date.now
 
-            if let data = nowPlaying.track.artworkData, let image = NSImage(data: data) {
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Image(nsImage: Self.roomImage)
+                .resizable()
+                .frame(width: 1586, height: 992)
+
+            sleeve(artwork, corners: [CGPoint(x: 83, y: 319), CGPoint(x: 440, y: 309),
+                                      CGPoint(x: 470, y: 620), CGPoint(x: 104, y: 650)])
+            sleeve(previousArtwork ?? artwork,
+                   corners: [CGPoint(x: 1144, y: 590), CGPoint(x: 1479, y: 590),
+                             CGPoint(x: 1563, y: 703), CGPoint(x: 1195, y: 708)])
+
+            // Rotate in the plane of the record BEFORE foreshortening it.
+            // This clock is independent of both the song duration and metadata polls.
+            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !isPlaying)) { timeline in
+                let elapsed = accumulatedRotation + (isPlaying ? max(0, timeline.date.timeIntervalSince(rotationStartedAt)) : 0)
+                AlbumSurface(image: artwork)
+                    .frame(width: 150, height: 150)
+                    .clipShape(Circle())
+                    .rotationEffect(.degrees((elapsed * 198).truncatingRemainder(dividingBy: 360)))
+                    .scaleEffect(x: 1, y: 0.285)
+                    .overlay {
+                        Capsule()
+                            .fill(LinearGradient(colors: [Color(red: 0.9, green: 0.76, blue: 0.52), .brown], startPoint: .leading, endPoint: .trailing))
+                            .frame(width: 5, height: 12)
+                            .offset(y: -5)
+                    }
+                    .position(x: 738, y: 568)
+            }
+            .frame(width: 1586, height: 992)
+        }
+        .frame(width: 1586, height: 992)
+        .onChange(of: isPlaying) { playing in
+            let now = Date.now
+            if !playing { accumulatedRotation += max(0, now.timeIntervalSince(rotationStartedAt)) }
+            rotationStartedAt = now
+        }
+    }
+
+    private func sleeve(_ image: NSImage?, corners: [CGPoint]) -> some View {
+        AlbumSurface(image: image)
+            .frame(width: 400, height: 400)
+            .overlay(Color(red: 0.36, green: 0.16, blue: 0.045).opacity(0.16).blendMode(.multiply))
+            .overlay(Rectangle().stroke(Color(red: 1, green: 0.85, blue: 0.61).opacity(0.25), lineWidth: 1))
+            .projectionEffect(SleeveProjection.transform(side: 400, corners: corners))
+    }
+}
+
+private struct AlbumSurface: View {
+    let image: NSImage?
+
+    var body: some View {
+        GeometryReader { proxy in
+            if let image {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFill()
-                    .blur(radius: 110)
-                    .opacity(0.16)
-                    .scaleEffect(1.15)
-            }
-        }
-        .clipped()
-    }
-}
-
-private struct VinylStage: View {
-    let track: NowPlayingTrack
-
-    var body: some View {
-        GeometryReader { proxy in
-            let side = min(proxy.size.width, proxy.size.height)
-            ZStack {
-                RoundedRectangle(cornerRadius: side * 0.08, style: .continuous)
-                    .fill(.white.opacity(0.035))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: side * 0.08, style: .continuous)
-                            .stroke(.white.opacity(0.09), lineWidth: 1)
-                    }
-                    .shadow(color: .black.opacity(0.5), radius: 40, y: 24)
-
-                TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timeline in
-                    let elapsed = track.elapsedTime(at: timeline.date)
-                    let angle = Angle.degrees(elapsed * 198.0) // 33 rpm ≈ 198°/s
-
-                    ZStack {
-                        VinylDisc(track: track)
-                            .rotationEffect(angle)
-                            .frame(width: side * 0.69, height: side * 0.69)
-                            .offset(x: -side * 0.08)
-
-                        Tonearm(isPlaying: track.isPlaying)
-                            .frame(width: side * 0.34, height: side * 0.72)
-                            .offset(x: side * 0.28, y: -side * 0.02)
-                    }
-                }
-            }
-        }
-        .aspectRatio(1, contentMode: .fit)
-    }
-}
-
-private struct VinylDisc: View {
-    let track: NowPlayingTrack
-
-    var body: some View {
-        GeometryReader { proxy in
-            let side = min(proxy.size.width, proxy.size.height)
-            ZStack {
-                Circle()
-                    .fill(Color(red: 0.022, green: 0.024, blue: 0.03))
-                    .shadow(color: .black.opacity(0.75), radius: side * 0.07, y: side * 0.035)
-
-                ForEach(0..<18, id: \.self) { index in
-                    Circle()
-                        .stroke(.white.opacity(index.isMultiple(of: 3) ? 0.055 : 0.025), lineWidth: 0.7)
-                        .padding(side * (0.025 + CGFloat(index) * 0.011))
-                }
-
-                Circle()
-                    .fill(.white.opacity(0.04))
-                    .frame(width: side * 0.48, height: side * 0.48)
-
-                artwork(side: side)
-
-                Circle()
-                    .fill(.black)
-                    .frame(width: side * 0.028, height: side * 0.028)
-                    .overlay(Circle().stroke(.white.opacity(0.22), lineWidth: 1))
-            }
-        }
-        .aspectRatio(1, contentMode: .fit)
-    }
-
-    @ViewBuilder
-    private func artwork(side: CGFloat) -> some View {
-        if let data = track.artworkData, let image = NSImage(data: data) {
-            Image(nsImage: image)
-                .resizable()
-                .scaledToFill()
-                .frame(width: side * 0.39, height: side * 0.39)
-                .clipShape(Circle())
-        } else {
-            Circle()
-                .fill(
-                    LinearGradient(
-                        colors: [.white.opacity(0.14), .white.opacity(0.035)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .frame(width: side * 0.39, height: side * 0.39)
-                .overlay {
-                    Image(systemName: "waveform")
-                        .font(.system(size: side * 0.095, weight: .light))
-                        .foregroundStyle(.white.opacity(0.62))
-                }
-        }
-    }
-}
-
-private struct Tonearm: View {
-    let isPlaying: Bool
-
-    var body: some View {
-        GeometryReader { proxy in
-            let width = proxy.size.width
-            let height = proxy.size.height
-
-            ZStack(alignment: .top) {
-                Circle()
-                    .fill(.black.opacity(0.78))
-                    .overlay(Circle().stroke(.white.opacity(0.16), lineWidth: 1))
-                    .frame(width: width * 0.42, height: width * 0.42)
-
-                Capsule()
-                    .fill(
-                        LinearGradient(
-                            colors: [.white.opacity(0.72), .white.opacity(0.22)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(width: width * 0.095, height: height * 0.67)
-                    .overlay(alignment: .bottom) {
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(.black.opacity(0.9))
-                            .frame(width: width * 0.18, height: height * 0.08)
-                            .offset(y: height * 0.035)
-                    }
-                    .offset(y: width * 0.15)
-                    .rotationEffect(.degrees(isPlaying ? 18 : 7), anchor: .top)
-                    .animation(.easeInOut(duration: 0.8), value: isPlaying)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        }
-    }
-}
-
-private struct TrackPanel: View {
-    let track: NowPlayingTrack
-    let connectionState: NowPlayingService.ConnectionState
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("VINO  /  NOW PLAYING")
-                .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                .tracking(2.2)
-                .foregroundStyle(.white.opacity(0.46))
-
-            if track.hasTrack {
-                Text(track.title)
-                    .font(.system(size: 46, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.65)
-
-                Text(track.artist.isEmpty ? "Unknown artist" : track.artist)
-                    .font(.system(size: 23, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.68))
-                    .lineLimit(1)
-
-                if !track.album.isEmpty {
-                    Text(track.album)
-                        .font(.system(size: 15, weight: .regular, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.42))
-                        .lineLimit(1)
-                }
-
-                TimelineView(.periodic(from: .now, by: 0.5)) { timeline in
-                    ProgressView(
-                        value: track.duration > 0 ? track.elapsedTime(at: timeline.date) : 0,
-                        total: max(track.duration, 1)
-                    )
-                    .progressViewStyle(.linear)
-                    .tint(.white.opacity(0.8))
-                }
-                .frame(maxWidth: 380)
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .clipped()
             } else {
-                Text("Play something\nin Yandex Music")
-                    .font(.system(size: 42, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.88))
-                    .lineSpacing(3)
-
-                Text("Vino reads the macOS system Now Playing session through an Apple-signed system process. Start a track in the Yandex Music desktop app and it should appear here automatically.")
-                    .font(.system(size: 16, weight: .regular, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.48))
-                    .lineSpacing(5)
-                    .frame(maxWidth: 450, alignment: .leading)
+                ZStack {
+                    Color(red: 0.965, green: 0.929, blue: 0.89)
+                    VStack(spacing: 14) {
+                        Image(systemName: "waveform")
+                            .font(.system(size: proxy.size.width * 0.16, weight: .ultraLight))
+                        Text("vino")
+                            .font(.system(size: proxy.size.width * 0.13, weight: .medium, design: .serif))
+                            .tracking(-2)
+                        Text("SIDE A · 33⅓ RPM")
+                            .font(.system(size: proxy.size.width * 0.028, design: .monospaced))
+                            .tracking(2)
+                    }
+                    .foregroundStyle(Color(red: 0.322, green: 0.173, blue: 0.145))
+                }
             }
-
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(connectionState.isConnected ? Color.green.opacity(0.85) : Color.orange.opacity(0.85))
-                    .frame(width: 7, height: 7)
-                Text(connectionState.label)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.36))
-            }
-            .padding(.top, 8)
         }
+    }
+}
+
+/// Homography maps the square artwork to the four corners of a photographed sleeve.
+/// Affine skew alone would misalign the bottom corners of the leaning cover.
+enum SleeveProjection {
+    static func transform(side: CGFloat, corners p: [CGPoint]) -> ProjectionTransform {
+        let dx1 = p[1].x - p[2].x, dx2 = p[3].x - p[2].x
+        let dy1 = p[1].y - p[2].y, dy2 = p[3].y - p[2].y
+        let sx = p[0].x - p[1].x + p[2].x - p[3].x
+        let sy = p[0].y - p[1].y + p[2].y - p[3].y
+        let denominator = dx1 * dy2 - dx2 * dy1
+        let g = (sx * dy2 - dx2 * sy) / denominator
+        let h = (dx1 * sy - sx * dy1) / denominator
+        var result = ProjectionTransform()
+        result.m11 = (p[1].x - p[0].x + g * p[1].x) / side
+        result.m12 = (p[1].y - p[0].y + g * p[1].y) / side
+        result.m13 = g / side
+        result.m21 = (p[3].x - p[0].x + h * p[3].x) / side
+        result.m22 = (p[3].y - p[0].y + h * p[3].y) / side
+        result.m23 = h / side
+        result.m31 = p[0].x
+        result.m32 = p[0].y
+        return result
     }
 }

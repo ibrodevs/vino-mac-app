@@ -18,7 +18,7 @@ final class WallpaperController {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                self?.rebuildWindows()
+                Task { @MainActor [weak self] in self?.rebuildWindows() }
             }
         }
     }

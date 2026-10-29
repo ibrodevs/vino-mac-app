@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 
@@ -28,6 +29,12 @@ final class NowPlayingService: ObservableObject {
     @Published private(set) var track: NowPlayingTrack = .idle
     @Published private(set) var connectionState: ConnectionState = .starting
 
+    @Published private(set) var artwork: NSImage?
+    @Published private(set) var previousArtwork: NSImage?
+    private var artworkBytes: Data?
+    private var trackIdentity = ""
+    private var generation = 0
+
     private var reader: JXANowPlayingReader?
 
     func start() {
@@ -37,9 +44,12 @@ final class NowPlayingService: ObservableObject {
         }
 
         connectionState = .starting
+        generation += 1
+        let currentGeneration = generation
         let newReader = JXANowPlayingReader { [weak self] snapshot in
             DispatchQueue.main.async {
-                self?.apply(snapshot)
+                guard let self, self.generation == currentGeneration else { return }
+                self.apply(snapshot)
             }
         }
 
@@ -52,6 +62,7 @@ final class NowPlayingService: ObservableObject {
     }
 
     func stop() {
+        generation += 1
         reader?.stop()
         reader = nil
     }
@@ -60,14 +71,28 @@ final class NowPlayingService: ObservableObject {
         reader?.refresh()
     }
 
-    private func apply(_ snapshot: JXANowPlayingReader.Snapshot?) {
+    func apply(_ snapshot: JXANowPlayingReader.Snapshot?) {
         guard let snapshot else {
             connectionState = .unavailable
             return
         }
 
         connectionState = .connected(source: snapshot.sourceApp)
-        let artworkData = snapshot.artworkBase64.flatMap { Data(base64Encoded: $0) }
+        let identity = "\(snapshot.sourceApp)|\(snapshot.title)|\(snapshot.artist)|\(snapshot.album)"
+        let changedTrack = identity != trackIdentity
+        let incoming = snapshot.artworkBase64.flatMap { Data(base64Encoded: $0) }
+        if changedTrack {
+            if let artwork { previousArtwork = artwork }
+            artwork = nil
+            artworkBytes = nil
+            trackIdentity = identity
+        }
+        // Some players omit artwork on intermediate polls of the same song.
+        if let incoming, incoming != artworkBytes, let decoded = NSImage(data: incoming) {
+            artwork = decoded
+            artworkBytes = incoming
+        }
+        let artworkData = artworkBytes
 
         track = NowPlayingTrack(
             title: snapshot.title,

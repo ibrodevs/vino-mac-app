@@ -13,7 +13,8 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "Vino",
-            path: "Sources/Vino"
+            path: "Sources/Vino",
+            resources: [.process("Assets")]
         )
     ],
     swiftLanguageVersions: [.v5]

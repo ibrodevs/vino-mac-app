@@ -1,13 +1,12 @@
 import Foundation
+import Darwin
 
-/// Reads the system-wide Now Playing session by executing JXA inside Apple's
-/// `/usr/bin/osascript` process.
+/// Reads the active session, including artwork, through a small Objective-C
+/// bridge loaded by Apple's system Perl. JXA remains a metadata-only fallback.
 ///
-/// On macOS 15.4+ direct MediaRemote reads from ordinary third-party processes
-/// are commonly denied. Running the query inside a platform process keeps the
-/// app credential-free while still reading the system session used by Control
-/// Center. This is intentionally isolated behind this type so we can replace
-/// the transport if Apple changes it again.
+/// The transport is isolated so changes to the private MediaRemote API do not
+/// affect scene rendering. Child processes have a bounded lifetime and write
+/// artwork through a file rather than a capacity-limited pipe.
 final class JXANowPlayingReader {
     struct Snapshot: Decodable {
         let title: String
@@ -24,15 +23,27 @@ final class JXANowPlayingReader {
     private let onSnapshot: (Snapshot?) -> Void
     private var timer: DispatchSourceTimer?
 
-    init(onSnapshot: @escaping (Snapshot?) -> Void) {
+    private let queryScript: String
+    private let timeout: TimeInterval
+    private let artworkTransport: (script: URL, library: URL)?
+
+    init(script: String? = nil, timeout: TimeInterval = 4,
+         onSnapshot: @escaping (Snapshot?) -> Void) {
+        self.artworkTransport = script == nil ? Self.findArtworkTransport() : nil
+        self.queryScript = script ?? Self.script
+        self.timeout = timeout
         self.onSnapshot = onSnapshot
     }
 
     var isSupported: Bool {
-        FileManager.default.isExecutableFile(atPath: "/usr/bin/osascript")
+        FileManager.default.isExecutableFile(atPath: artworkTransport == nil ? "/usr/bin/osascript" : "/usr/bin/perl")
     }
 
     func start() {
+        queue.async { [weak self] in self?.startPolling() }
+    }
+
+    private func startPolling() {
         guard timer == nil, isSupported else {
             if !isSupported { onSnapshot(nil) }
             return
@@ -48,9 +59,11 @@ final class JXANowPlayingReader {
     }
 
     func stop() {
-        timer?.setEventHandler {}
-        timer?.cancel()
-        timer = nil
+        queue.async { [weak self] in
+            self?.timer?.setEventHandler {}
+            self?.timer?.cancel()
+            self?.timer = nil
+        }
     }
 
     func refresh() {
@@ -61,34 +74,66 @@ final class JXANowPlayingReader {
 
     private func poll() {
         let process = Process()
-        let stdout = Pipe()
-        let stderr = Pipe()
-
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-l", "JavaScript", "-e", Self.script]
-        process.standardOutput = stdout
-        process.standardError = stderr
+        // A file cannot fill up like a pipe while osascript writes large artwork.
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vino-now-playing-\(UUID().uuidString).json")
+        guard FileManager.default.createFile(atPath: outputURL.path, contents: nil),
+              let output = try? FileHandle(forWritingTo: outputURL) else {
+            onSnapshot(nil)
+            return
+        }
+        defer {
+            try? output.close()
+            try? FileManager.default.removeItem(at: outputURL)
+        }
+        let finished = DispatchSemaphore(value: 0)
+        if let transport = artworkTransport {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+            process.arguments = [transport.script.path, transport.library.path]
+        } else {
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            process.arguments = ["-l", "JavaScript", "-e", queryScript]
+        }
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        process.terminationHandler = { _ in finished.signal() }
 
         do {
             try process.run()
-            process.waitUntilExit()
-
+            if finished.wait(timeout: .now() + timeout) == .timedOut {
+                process.terminate()
+                if finished.wait(timeout: .now() + 0.5) == .timedOut {
+                    kill(process.processIdentifier, SIGKILL)
+                    _ = finished.wait(timeout: .now() + 0.5)
+                }
+                onSnapshot(nil)
+                return
+            }
             guard process.terminationStatus == 0 else {
                 onSnapshot(nil)
                 return
             }
-
-            let data = stdout.fileHandleForReading.readDataToEndOfFile()
-            guard !data.isEmpty else {
-                onSnapshot(nil)
-                return
-            }
-
-            let snapshot = try JSONDecoder().decode(Snapshot.self, from: data)
-            onSnapshot(snapshot)
+            let data = try Data(contentsOf: outputURL)
+            onSnapshot(try JSONDecoder().decode(Snapshot.self, from: data))
         } catch {
             onSnapshot(nil)
         }
+    }
+
+    private static func findArtworkTransport() -> (script: URL, library: URL)? {
+        if let script = Bundle.main.url(forResource: "read", withExtension: "pl"),
+           let library = Bundle.main.privateFrameworksURL?.appendingPathComponent("VinoMediaReader.dylib"),
+           FileManager.default.fileExists(atPath: library.path) {
+            return (script, library)
+        }
+        let developmentDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent(".build/media-reader")
+        let script = developmentDirectory.appendingPathComponent("read.pl")
+        let library = developmentDirectory.appendingPathComponent("VinoMediaReader.dylib")
+        guard FileManager.default.fileExists(atPath: script.path),
+              FileManager.default.fileExists(atPath: library.path) else { return nil }
+        return (script, library)
     }
 
     private static let script = #"""

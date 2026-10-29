@@ -9,8 +9,12 @@ The first MVP is intentionally focused on **Yandex Music for macOS** while keepi
 - Native Swift + SwiftUI/AppKit, no Electron.
 - One borderless wallpaper window per display.
 - Wallpaper stays behind desktop icons and ignores mouse events.
-- Dynamic vinyl scene with spinning record, tonearm, blurred artwork, track title/artist/album, and progress.
-- Polls the macOS system Now Playing session through Apple-signed `/usr/bin/osascript` + JXA.
+- Warm photographic listening room with walnut table, amber glass lamp and vintage turntable.
+- Current artwork on the upright sleeve and continuously rotating vinyl label; previous artwork on the sleeve stack.
+- Artwork decoded only when it changes; missing artwork on an intermediate poll retains the same song's image.
+- Independent 33 rpm animation clock, paused with playback, with no reset at track boundaries.
+- Bounded Now Playing queries with timeout and automatic polling recovery, including large artwork payloads.
+- Reads current track metadata and real artwork through a bundled read-only bridge hosted by Apple-signed `/usr/bin/perl`; JXA remains a metadata fallback.
 - Menu bar controls to enable/disable the wallpaper and refresh metadata.
 - No Yandex login, password, token, or unofficial Yandex API is required.
 
@@ -34,13 +38,13 @@ open dist/Vino.app
 
 Then open the **Yandex Music desktop app**, start a track, and return to the desktop. Vino polls the system session once per second and should update automatically.
 
-## Why the reader uses `osascript`
+## How track artwork is read
 
-Apple tightened direct third-party access to the private MediaRemote framework starting with macOS 15.4. Vino therefore executes a very small JXA query inside Apple's own `/usr/bin/osascript` process and reads `MRNowPlayingRequest` from there. This keeps the app credential-free and works on newer macOS versions where calling MediaRemote directly from Vino may return an empty result.
+The bundled Objective-C media reader requests the active system session through MediaRemote, including the actual artwork bytes. A tiny Perl loader runs it inside Apple's system interpreter; Vino does not search catalogs or guess artwork from song names. No player credentials or internet request is required.
 
-MediaRemote is still private API and Apple can change it. The implementation is isolated in `JXANowPlayingReader.swift` so we can replace the transport without touching the wallpaper UI.
+`Scripts/build-media-reader.sh` builds the bridge locally with clang. Both the development launcher and packaged app use it. `JXANowPlayingReader.swift` manages the bounded child process and falls back to JXA metadata when the bridge is missing. JXA's MRNowPlayingRequest path does not provide artwork on this Mac, which is why the bridge is necessary. The transport approach is informed by [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter); attribution is in Resources/MediaReader/NOTICE.md and included in the app.
 
-Artwork availability depends on what the active player publishes into the system session. The first hardware test should verify what the current Yandex Music macOS build exposes.
+MediaRemote is private API, isolated behind the reader. A player still needs to publish cover art to its system media session.
 
 ## Project layout
 
@@ -65,6 +69,18 @@ Scripts/
 
 1. Verify Yandex Music metadata + artwork on the target Mac.
 2. Add play/pause/next/previous system media commands.
-3. Add a fallback artwork provider if Yandex does not publish artwork bytes.
+3. Extend live artwork checks to additional music players.
 4. Derive scene lighting from album-art colors.
 5. Add themes, launch-at-login, and power-aware rendering.
+
+## Listening-room scene
+
+The wallpaper follows the supplied room screenshot. The cream and espresso placeholder sleeve uses the supporting DESIGN.md palette. No imitation menu bar or Dock is drawn. The room is bundled locally and works offline; see Resources/SCENE.md for the asset prompt.
+
+Vino is a visual companion, not an audio player. Enable playlist/track repeat in Yandex Music for endless audio playback. The vinyl animation continues independently of song duration while macOS reports playback. Actual artwork depends on the music app publishing it through Now Playing.
+
+## Validation
+
+Run `./Scripts/check.sh` for perspective alignment, large-artwork transport, timeout recovery and a rendered room preview at `dist/preview.png`. Run `./Scripts/build-app.sh` to package the app and its local scene asset.
+
+Run `./Scripts/check.sh --live` with a track open in the music player to verify actual artwork end to end and write `dist/live-preview.png`. Default checks also verify track changes, delayed covers and retention during incomplete metadata updates.
