@@ -1,62 +1,79 @@
+import Combine
 import Foundation
 
 @MainActor
 final class NowPlayingService: ObservableObject {
     enum ConnectionState: Equatable {
         case starting
-        case connected
+        case connected(source: String)
         case unavailable
 
         var label: String {
             switch self {
-            case .starting: return "Connecting to macOS Now Playing…"
-            case .connected: return "Connected to macOS Now Playing"
-            case .unavailable: return "Now Playing is unavailable on this macOS build"
+            case .starting:
+                return "Connecting to macOS Now Playing…"
+            case .connected(let source):
+                return source.isEmpty ? "Connected to macOS Now Playing" : "Connected · \(source)"
+            case .unavailable:
+                return "Now Playing is unavailable on this macOS build"
             }
+        }
+
+        var isConnected: Bool {
+            if case .connected = self { return true }
+            return false
         }
     }
 
     @Published private(set) var track: NowPlayingTrack = .idle
     @Published private(set) var connectionState: ConnectionState = .starting
 
-    private var bridge: MediaRemoteBridge?
+    private var reader: JXANowPlayingReader?
 
     func start() {
-        guard bridge == nil else {
+        guard reader == nil else {
             refresh()
             return
         }
 
         connectionState = .starting
-        let newBridge = MediaRemoteBridge { [weak self] snapshot in
+        let newReader = JXANowPlayingReader { [weak self] snapshot in
             DispatchQueue.main.async {
                 self?.apply(snapshot)
             }
         }
-        bridge = newBridge
-        connectionState = newBridge.start() ? .connected : .unavailable
+
+        reader = newReader
+        guard newReader.isSupported else {
+            connectionState = .unavailable
+            return
+        }
+        newReader.start()
     }
 
     func stop() {
-        bridge?.stop()
-        bridge = nil
+        reader?.stop()
+        reader = nil
     }
 
     func refresh() {
-        bridge?.refresh()
+        reader?.refresh()
     }
 
-    private func apply(_ snapshot: MediaRemoteBridge.Snapshot?) {
+    private func apply(_ snapshot: JXANowPlayingReader.Snapshot?) {
         guard let snapshot else {
-            track = .idle
+            connectionState = .unavailable
             return
         }
+
+        connectionState = .connected(source: snapshot.sourceApp)
+        let artworkData = snapshot.artworkBase64.flatMap { Data(base64Encoded: $0) }
 
         track = NowPlayingTrack(
             title: snapshot.title,
             artist: snapshot.artist,
             album: snapshot.album,
-            artworkData: snapshot.artworkData,
+            artworkData: artworkData,
             duration: snapshot.duration,
             elapsed: snapshot.elapsed,
             playbackRate: snapshot.playbackRate,

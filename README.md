@@ -10,7 +10,7 @@ The first MVP is intentionally focused on **Yandex Music for macOS** while keepi
 - One borderless wallpaper window per display.
 - Wallpaper stays behind desktop icons and ignores mouse events.
 - Dynamic vinyl scene with spinning record, tonearm, blurred artwork, track title/artist/album, and progress.
-- Runtime MediaRemote bridge for system Now Playing metadata.
+- Polls the macOS system Now Playing session through Apple-signed `/usr/bin/osascript` + JXA.
 - Menu bar controls to enable/disable the wallpaper and refresh metadata.
 - No Yandex login, password, token, or unofficial Yandex API is required.
 
@@ -21,6 +21,7 @@ Requirements: macOS 13+ and Xcode Command Line Tools.
 ```bash
 git clone https://github.com/ibrodevs/vino-mac-app.git
 cd vino-mac-app
+git switch feat/live-wallpaper-mvp
 ./Scripts/run.sh
 ```
 
@@ -31,15 +32,15 @@ Or build only:
 open dist/Vino.app
 ```
 
-Then open the **Yandex Music desktop app**, start a track, and return to the desktop. Vino should update from the system Now Playing session.
+Then open the **Yandex Music desktop app**, start a track, and return to the desktop. Vino polls the system session once per second and should update automatically.
 
-## Important compatibility note
+## Why the reader uses `osascript`
 
-The system-wide Now Playing reader currently uses Apple's private `MediaRemote` framework loaded dynamically at runtime. We do not link private headers and the app remains buildable with normal Swift tooling, but Apple can change or restrict this framework on any macOS release.
+Apple tightened direct third-party access to the private MediaRemote framework starting with macOS 15.4. Vino therefore executes a very small JXA query inside Apple's own `/usr/bin/osascript` process and reads `MRNowPlayingRequest` from there. This keeps the app credential-free and works on newer macOS versions where calling MediaRemote directly from Vino may return an empty result.
 
-If the menu reports `Now Playing is unavailable`, the wallpaper itself is still working; the next milestone is to add a version-specific helper/fallback for affected macOS builds. That should be tested on the exact Mac/macOS version that will run Vino.
+MediaRemote is still private API and Apple can change it. The implementation is isolated in `JXANowPlayingReader.swift` so we can replace the transport without touching the wallpaper UI.
 
-This approach is preferable for the MVP because it does not require Yandex account credentials and can work with any player that publishes a macOS Now Playing session.
+Artwork availability depends on what the active player publishes into the system session. The first hardware test should verify what the current Yandex Music macOS build exposes.
 
 ## Project layout
 
@@ -50,7 +51,7 @@ Sources/Vino/
   WallpaperController.swift desktop-level windows
   WallpaperView.swift       live vinyl wallpaper UI
   NowPlayingService.swift   observable media state
-  MediaRemoteBridge.swift   macOS system Now Playing bridge
+  JXANowPlayingReader.swift macOS system Now Playing reader
   NowPlayingTrack.swift     track model
   MenuBarView.swift         controls/settings
 Resources/
@@ -62,8 +63,8 @@ Scripts/
 
 ## Next milestones
 
-1. Verify Yandex Music metadata on the target Mac.
+1. Verify Yandex Music metadata + artwork on the target Mac.
 2. Add play/pause/next/previous system media commands.
-3. Add an optimized compatibility helper for macOS versions where direct MediaRemote reads are restricted.
+3. Add a fallback artwork provider if Yandex does not publish artwork bytes.
 4. Derive scene lighting from album-art colors.
 5. Add themes, launch-at-login, and power-aware rendering.

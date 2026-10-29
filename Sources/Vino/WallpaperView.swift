@@ -107,7 +107,7 @@ private struct VinylDisc: View {
                 ForEach(0..<18, id: \.self) { index in
                     Circle()
                         .stroke(.white.opacity(index.isMultiple(of: 3) ? 0.055 : 0.025), lineWidth: 0.7)
-                        .padding(side * (0.025 + Double(index) * 0.011))
+                        .padding(side * (0.025 + CGFloat(index) * 0.011))
                 }
 
                 Circle()
@@ -235,7 +235,7 @@ private struct TrackPanel: View {
                     .foregroundStyle(.white.opacity(0.88))
                     .lineSpacing(3)
 
-                Text("Vino listens to the macOS system Now Playing session. Start a track in the Yandex Music desktop app and it should appear here automatically.")
+                Text("Vino reads the macOS system Now Playing session through an Apple-signed system process. Start a track in the Yandex Music desktop app and it should appear here automatically.")
                     .font(.system(size: 16, weight: .regular, design: .rounded))
                     .foregroundStyle(.white.opacity(0.48))
                     .lineSpacing(5)
@@ -244,7 +244,7 @@ private struct TrackPanel: View {
 
             HStack(spacing: 8) {
                 Circle()
-                    .fill(connectionState == .connected ? Color.green.opacity(0.85) : Color.orange.opacity(0.85))
+                    .fill(connectionState.isConnected ? Color.green.opacity(0.85) : Color.orange.opacity(0.85))
                     .frame(width: 7, height: 7)
                 Text(connectionState.label)
                     .font(.system(size: 12, design: .monospaced))
